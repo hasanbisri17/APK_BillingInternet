@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\InvoiceController;
 
-Route::view('/', 'welcome');
+Route::redirect('/', '/admin');
 
 Route::view('dashboard', 'dashboard')
     ->middleware(['auth', 'verified'])
