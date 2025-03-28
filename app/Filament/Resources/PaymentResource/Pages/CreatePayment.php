@@ -26,6 +26,19 @@ class CreatePayment extends CreateRecord
             $data['status'] = 'overdue';
         }
 
+        // Ensure internet_package_id is set from customer's package
+        if (!empty($data['customer_id'])) {
+            $customer = \App\Models\Customer::find($data['customer_id']);
+            if ($customer) {
+                $data['internet_package_id'] = $customer->internet_package_id;
+            }
+        }
+
+        // Ensure payment_method_id is null for new payments
+        if (empty($data['payment_date'])) {
+            $data['payment_method_id'] = null;
+        }
+
         return $data;
     }
 }

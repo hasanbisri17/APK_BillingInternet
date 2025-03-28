@@ -55,7 +55,13 @@ class PaymentResource extends Resource
                     ->label('Paket Internet')
                     ->relationship('internetPackage', 'name')
                     ->required()
-                    ->disabled(),
+                    ->disabled()
+                    ->dehydrated()
+                    ->afterStateHydrated(function ($component, $state, $record) {
+                        if ($record && $record->customer) {
+                            $component->state($record->customer->internet_package_id);
+                        }
+                    }),
                 Forms\Components\TextInput::make('invoice_number')
                     ->label('Nomor Invoice')
                     ->default(fn () => Payment::generateInvoiceNumber())
@@ -88,6 +94,16 @@ class PaymentResource extends Resource
                     ->preload()
                     ->searchable()
                     ->nullable()
+                    ->hidden(fn ($record) => !$record || $record->status !== 'paid')
+                    ->required(fn ($record) => $record && $record->status === 'paid')
+                    ->live()
+                    ->afterStateUpdated(function ($state, Forms\Set $set) {
+                        if ($state) {
+                            $set('status', 'paid');
+                            $set('payment_date', now());
+                        }
+                    })
+                    ->dehydrated(fn ($record) => $record && $record->status === 'paid')
                     ->createOptionForm([
                         Forms\Components\TextInput::make('name')
                             ->required()
@@ -297,6 +313,7 @@ class PaymentResource extends Resource
                         'amount' => $customer->internetPackage->price,
                         'due_date' => $dueDate,
                         'status' => 'pending',
+                        'payment_method_id' => null, // Allow null for pending payments
                     ]);
 
                     // Send WhatsApp notification for new bill
