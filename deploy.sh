@@ -6,7 +6,7 @@ log() {
 }
 
 # Change to the project directory
-cd "$(dirname "$0")"
+cd "$(/var/www/APK_BillingInternet "$0")"
 
 log "Starting deployment..."
 
