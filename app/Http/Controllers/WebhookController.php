@@ -9,6 +9,16 @@ class WebhookController extends Controller
 {
     public function handle(Request $request)
     {
+        // If GET request, show status page
+        if ($request->isMethod('get')) {
+            return response()->json([
+                'status' => 'Webhook is active',
+                'message' => 'This endpoint accepts POST requests from GitHub webhooks',
+                'timestamp' => now()->toIso8601String()
+            ]);
+        }
+
+        // For POST requests, handle webhook
         // Get secret from environment variable
         $secret = env('GITHUB_WEBHOOK_SECRET');
 
