@@ -1,9 +1,14 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\WebhookController;
 use App\Http\Controllers\InvoiceController;
 
 Route::redirect('/', '/admin');
+
+// GitHub Webhook route
+Route::post('/webhook', [WebhookController::class, 'handle'])->name('webhook');
+
 
 Route::view('dashboard', 'dashboard')
     ->middleware(['auth', 'verified'])
