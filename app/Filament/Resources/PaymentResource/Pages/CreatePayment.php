@@ -3,7 +3,9 @@
 namespace App\Filament\Resources\PaymentResource\Pages;
 
 use App\Filament\Resources\PaymentResource;
+use App\Services\WhatsAppService;
 use Filament\Resources\Pages\CreateRecord;
+use Filament\Notifications\Notification;
 
 class CreatePayment extends CreateRecord
 {
@@ -12,6 +14,21 @@ class CreatePayment extends CreateRecord
     protected function getRedirectUrl(): string
     {
         return $this->getResource()::getUrl('index');
+    }
+
+    protected function afterCreate(): void
+    {
+        // Send WhatsApp notification for new bill
+        try {
+            $whatsapp = new WhatsAppService();
+            $whatsapp->sendBillingNotification($this->record, 'new');
+        } catch (\Exception $e) {
+            Notification::make()
+                ->warning()
+                ->title('WhatsApp Notification Failed')
+                ->body('Invoice created successfully, but failed to send WhatsApp notification.')
+                ->send();
+        }
     }
 
     protected function mutateFormDataBeforeCreate(array $data): array
