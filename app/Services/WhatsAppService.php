@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Models\Customer;
-use App\Models\Payment;
 use App\Models\WhatsAppMessage;
 use App\Models\WhatsAppSetting;
 use App\Models\WhatsAppTemplate;
@@ -32,46 +31,118 @@ class WhatsAppService
             'headers' => [
                 'Authorization' => $this->settings->api_token,
             ],
-            'verify' => false, // Skip SSL verification for local development
+            'verify' => false,
         ]);
     }
 
-    /**
-     * Format phone number to international format
-     */
-    protected function formatPhone(string $phone): string
+    public function sendBulkServiceNotification($customerIds, $notificationType, $schedule = null)
     {
-        // Remove any non-numeric characters
-        $phone = preg_replace('/[^0-9]/', '', $phone);
+        try {
+            $customers = Customer::when(!empty($customerIds), function ($query) use ($customerIds) {
+                $query->whereIn('id', $customerIds);
+            })->get();
 
-        // If number starts with 0, replace it with country code
-        if (str_starts_with($phone, '0')) {
-            $phone = $this->settings->default_country_code . substr($phone, 1);
-        }
-        // If number doesn't start with country code, add it
-        elseif (!str_starts_with($phone, $this->settings->default_country_code)) {
-            $phone = $this->settings->default_country_code . $phone;
-        }
+            $messageDetails = $this->getServiceNotificationDetails($notificationType);
+            $results = ['total' => $customers->count(), 'sent' => 0, 'failed' => 0];
 
-        return $phone;
+            $template = WhatsAppTemplate::where('code', 'service.notification')->first();
+            if (!$template) {
+                throw new \Exception('Service notification template not found');
+            }
+
+            foreach ($customers as $customer) {
+                if (!$customer->phone) {
+                    $results['failed']++;
+                    continue;
+                }
+
+                $message = str_replace(
+                    ['{message}', '{time}'],
+                    [$messageDetails['message'], $messageDetails['time']],
+                    $template->content
+                );
+
+                // Create WhatsApp message record
+                $whatsappMessage = new WhatsAppMessage([
+                    'customer_id' => $customer->id,
+                    'message_type' => 'service_notification',
+                    'message' => $message,
+                    'status' => 'pending',
+                    'scheduled_at' => $schedule,
+                ]);
+
+                if ($schedule) {
+                    $whatsappMessage->save();
+                    $results['sent']++;
+                    continue;
+                }
+
+                // Send message immediately
+                $result = $this->sendMessage($customer->phone, $message);
+
+                // Update message status
+                $whatsappMessage->status = $result['success'] ? 'sent' : 'failed';
+                $whatsappMessage->response = $result;
+                $whatsappMessage->sent_at = now();
+                $whatsappMessage->save();
+
+                if ($result['success']) {
+                    $results['sent']++;
+                } else {
+                    $results['failed']++;
+                }
+
+                // Add delay to avoid rate limiting
+                usleep(500000); // 0.5 second delay
+            }
+
+            return $results;
+
+        } catch (\Exception $e) {
+            Log::error('Bulk Service Notification Error:', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw $e;
+        }
     }
 
-    /**
-     * Send a WhatsApp message
-     */
+    private function getServiceNotificationDetails($type)
+    {
+        $now = now()->format('d/m/Y H:i');
+        
+        $messages = [
+            'maintenance' => [
+                'message' => 'akan dilakukan pemeliharaan jaringan',
+                'time' => $now
+            ],
+            'disruption' => [
+                'message' => 'terjadi gangguan pada layanan internet',
+                'time' => $now
+            ],
+            'resolved' => [
+                'message' => 'gangguan telah diperbaiki dan layanan telah normal kembali',
+                'time' => $now
+            ]
+        ];
+
+        return $messages[$type] ?? [
+            'message' => 'terdapat informasi penting terkait layanan internet',
+            'time' => $now
+        ];
+    }
+
     public function sendMessage(string $phone, string $message, array $options = []): array
     {
         try {
             $phone = $this->formatPhone($phone);
             
-            // Build form data according to Fonnte's API
             $formData = [
                 'target' => $phone,
                 'message' => $message,
-                'delay' => '1',
+                'delay' => '15',
             ];
 
-            // Add any additional options
             $formData = array_merge($formData, $options);
 
             $response = $this->client->post('send', [
@@ -103,125 +174,17 @@ class WhatsAppService
         }
     }
 
-    /**
-     * Send a billing notification using template
-     */
-    public function sendBillingNotification(Payment $payment, string $type = 'new'): void
+    protected function formatPhone(string $phone): string
     {
-        $customer = $payment->customer;
-        if (!$customer->phone) {
-            Log::warning('Customer has no phone number', ['customer_id' => $customer->id]);
-            return;
+        $phone = preg_replace('/[^0-9]/', '', $phone);
+
+        if (str_starts_with($phone, '0')) {
+            $phone = $this->settings->default_country_code . substr($phone, 1);
+        }
+        elseif (!str_starts_with($phone, $this->settings->default_country_code)) {
+            $phone = $this->settings->default_country_code . $phone;
         }
 
-        $template = WhatsAppTemplate::findByCode("billing.{$type}");
-        if (!$template) {
-            Log::error('Template not found', ['type' => "billing.{$type}"]);
-            return;
-        }
-
-        // Format message with template variables
-        $message = $template->formatMessage([
-            'customer_name' => $customer->name,
-            'period' => Carbon::parse($payment->due_date)->format('F Y'),
-            'invoice_number' => $payment->invoice_number,
-            'amount' => number_format($payment->amount, 0, ',', '.'),
-            'due_date' => Carbon::parse($payment->due_date)->format('d F Y'),
-            'payment_date' => $payment->payment_date ? Carbon::parse($payment->payment_date)->format('d F Y') : '-',
-        ]);
-
-        // Create WhatsApp message record
-        $whatsappMessage = new WhatsAppMessage([
-            'customer_id' => $customer->id,
-            'payment_id' => $payment->id,
-            'message_type' => "billing.{$type}",
-            'message' => $message,
-            'status' => 'pending',
-        ]);
-
-        // Send message
-        $result = $this->sendMessage($customer->phone, $message);
-
-        // Update message status
-        $whatsappMessage->status = $result['success'] ? 'sent' : 'failed';
-        $whatsappMessage->response = $result;
-        $whatsappMessage->sent_at = now();
-        $whatsappMessage->save();
-    }
-
-    /**
-     * Send a broadcast message to multiple customers
-     */
-    public function sendBroadcast(array $customerIds, string $message): array
-    {
-        $results = [
-            'total' => count($customerIds),
-            'sent' => 0,
-            'failed' => 0,
-        ];
-
-        $customers = Customer::whereIn('id', $customerIds)
-            ->whereNotNull('phone')
-            ->get();
-
-        foreach ($customers as $customer) {
-            // Create WhatsApp message record
-            $whatsappMessage = new WhatsAppMessage([
-                'customer_id' => $customer->id,
-                'message_type' => 'broadcast',
-                'message' => $message,
-                'status' => 'pending',
-            ]);
-
-            // Send message
-            $result = $this->sendMessage($customer->phone, $message);
-
-            // Update message status
-            $whatsappMessage->status = $result['success'] ? 'sent' : 'failed';
-            $whatsappMessage->response = $result;
-            $whatsappMessage->sent_at = now();
-            $whatsappMessage->save();
-
-            // Update results
-            if ($result['success']) {
-                $results['sent']++;
-            } else {
-                $results['failed']++;
-            }
-
-            // Add delay to avoid rate limiting
-            usleep(500000); // 0.5 second delay
-        }
-
-        return $results;
-    }
-
-    /**
-     * Schedule a broadcast message to multiple customers
-     */
-    public function scheduleBroadcast(array $customerIds, string $message, string $scheduledAt): array
-    {
-        $customers = Customer::whereIn('id', $customerIds)
-            ->whereNotNull('phone')
-            ->get();
-
-        $scheduled = 0;
-        foreach ($customers as $customer) {
-            // Create WhatsApp message record
-            $whatsappMessage = new WhatsAppMessage([
-                'customer_id' => $customer->id,
-                'message_type' => 'broadcast',
-                'message' => $message,
-                'status' => 'pending',
-                'scheduled_at' => $scheduledAt,
-            ]);
-            $whatsappMessage->save();
-            $scheduled++;
-        }
-
-        return [
-            'total' => count($customerIds),
-            'scheduled' => $scheduled,
-        ];
+        return $phone;
     }
 }
