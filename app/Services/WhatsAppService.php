@@ -93,7 +93,7 @@ class WhatsAppService
                 }
 
                 // Add delay to avoid rate limiting
-                usleep(500000); // 0.5 second delay
+                usleep(5000000); // 0.5 second delay
             }
 
             return $results;
